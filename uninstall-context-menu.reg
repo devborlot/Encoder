@@ -1,0 +1,8 @@
+Windows Registry Editor Version 5.00
+
+; Remove Encoder GUI do menu de contexto
+
+[-HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.mp4\shell\EncoderGUI]
+[-HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.mov\shell\EncoderGUI]
+[-HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.avi\shell\EncoderGUI]
+[-HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.mkv\shell\EncoderGUI]

@@ -1,0 +1,32 @@
+Windows Registry Editor Version 5.00
+
+; Encoder GUI - Menu de contexto para arquivos de vídeo
+; Adiciona "Abrir com Encoder" no clique direito em .mp4, .mov, .avi, .mkv
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.mp4\shell\EncoderGUI]
+@="Abrir com Encoder"
+"Icon"="D:\\_DEV\\Encoder\\target\\release\\encoder-gui.exe"
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.mp4\shell\EncoderGUI\command]
+@="\"D:\\_DEV\\Encoder\\target\\release\\encoder-gui.exe\" \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.mov\shell\EncoderGUI]
+@="Abrir com Encoder"
+"Icon"="D:\\_DEV\\Encoder\\target\\release\\encoder-gui.exe"
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.mov\shell\EncoderGUI\command]
+@="\"D:\\_DEV\\Encoder\\target\\release\\encoder-gui.exe\" \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.avi\shell\EncoderGUI]
+@="Abrir com Encoder"
+"Icon"="D:\\_DEV\\Encoder\\target\\release\\encoder-gui.exe"
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.avi\shell\EncoderGUI\command]
+@="\"D:\\_DEV\\Encoder\\target\\release\\encoder-gui.exe\" \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.mkv\shell\EncoderGUI]
+@="Abrir com Encoder"
+"Icon"="D:\\_DEV\\Encoder\\target\\release\\encoder-gui.exe"
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.mkv\shell\EncoderGUI\command]
+@="\"D:\\_DEV\\Encoder\\target\\release\\encoder-gui.exe\" \"%1\""

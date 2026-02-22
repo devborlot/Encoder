@@ -1,0 +1,30 @@
+[package]
+name = "encoder"
+version = "0.1.0"
+edition = "2021"
+description = "Automação de claquete + encoding MXF XDCAM HD422"
+
+[lib]
+name = "encoder_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "encoder"
+path = "src/bin/cli.rs"
+
+[[bin]]
+name = "encoder-gui"
+path = "src/bin/gui.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+image = "0.25"
+imageproc = "0.25"
+ab_glyph = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+serde_json = "1"
+anyhow = "1"
+chrono = "0.4"
+eframe = "0.31"
+rfd = "0.15"
