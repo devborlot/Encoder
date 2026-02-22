@@ -5,6 +5,7 @@ use std::process::Command;
 
 #[derive(Debug, Clone)]
 pub struct VideoMetadata {
+    pub duration_raw: f64,
     pub duration_secs: u64,
     pub width: u32,
     pub height: u32,
@@ -93,12 +94,13 @@ pub fn probe(video_path: &Path) -> Result<VideoMetadata> {
         .or_else(|| video_stream["duration"].as_str())
         .context("Duração não encontrada")?;
 
-    let duration_secs = duration_str
+    let duration_raw = duration_str
         .parse::<f64>()
-        .context("Falha ao parsear duração")?
-        .round() as u64;
+        .context("Falha ao parsear duração")?;
+    let duration_secs = duration_raw.round() as u64;
 
     Ok(VideoMetadata {
+        duration_raw,
         duration_secs,
         width,
         height,

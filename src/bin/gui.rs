@@ -282,13 +282,23 @@ fn run_encode(
     let output_filename = format!("{titulo}.mxf");
     let output_path = output_dir.join(&output_filename);
 
-    // Encode
+    // Encode MXF
     encoder::encode(&temp_slate, video_path, &output_path, meta)?;
+
+    // Encode versão agência (MP4 sem claquete)
+    let agency_dir = output_dir.join("agencia");
+    std::fs::create_dir_all(&agency_dir)?;
+    let agency_path = agency_dir.join(format!("{titulo}.mp4"));
+    encoder::encode_agency(video_path, &agency_path, meta)?;
 
     // Clean up temp
     let _ = std::fs::remove_file(&temp_slate);
 
-    Ok(output_path.display().to_string())
+    Ok(format!(
+        "{}\nAgência: {}",
+        output_path.display(),
+        agency_path.display()
+    ))
 }
 
 impl eframe::App for EncoderApp {

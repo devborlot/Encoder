@@ -154,14 +154,22 @@ fn process_video(video_path: &Path, config_dir: &Path, output_dir: &Path) -> Res
     let output_filename = format!("{}.mxf", titulo);
     let output_path = output_dir.join(&output_filename);
 
-    // 8. Encodar
+    // 8. Encodar MXF
     encoder::encode(&temp_slate, video_path, &output_path, &meta)?;
 
-    // 9. Limpar temporários
+    // 9. Encodar versão agência (MP4 sem claquete)
+    let agency_dir = output_dir.join("agencia");
+    std::fs::create_dir_all(&agency_dir)
+        .with_context(|| format!("Não foi possível criar diretório: {}", agency_dir.display()))?;
+    let agency_path = agency_dir.join(format!("{}.mp4", titulo));
+    encoder::encode_agency(video_path, &agency_path, &meta)?;
+
+    // 10. Limpar temporários
     let _ = std::fs::remove_file(&temp_slate);
 
     println!("\nResultado:");
-    println!("  Arquivo: {}", output_path.display());
+    println!("  MXF: {}", output_path.display());
+    println!("  Agência: {}", agency_path.display());
     println!(
         "  Duração total: {}s (5s claquete + 2s preto + {}s vídeo)",
         7 + meta.duration_secs,
