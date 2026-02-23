@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:cape.io)",
+      "WebSearch",
+      "WebFetch(domain:apitracker.io)",
+      "Bash(cargo build:*)",
+      "Bash(git init:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git remote add:*)",
+      "Bash(gh auth:*)",
+      "Bash(gh repo:*)",
+      "Bash(git push:*)",
+      "Bash(cd /d/_DEV/Encoder && gh release create v0.1.0 dist/Encoder.zip --title \"Encoder v0.1.0\" --notes \"$\\(cat <<'EOF'\n## Encoder v0.1.0\n\nPrimeira release - Automacao de claquete + encoding MXF XDCAM HD422.\n\n### Conteudo do pacote\n- `encoder.exe` - CLI\n- `encoder-gui.exe` - GUI\n- Arquivos de configuracao \\(codes.toml, defaults.toml\\)\n- Template da claquete \\(1920x1080\\)\n- Registro de menu de contexto do Windows\n\n### Pre-requisitos\n- Windows 10/11 ou Windows Server 2016+\n- FFmpeg + FFprobe no PATH\n- Fonte Arial Bold \\(padrao do Windows\\)\n\nVeja o `INSTALL.md` incluso no zip para instrucoes completas.\nEOF\n\\)\" 2>&1)"
+    ]
+  }
+}
