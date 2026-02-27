@@ -3,3 +3,6 @@ produtora = "POST.E"
 agencia = "C3 Comunicação"
 anunciante = "SIPOLATTI"
 diretor = "XXXXXXXXXXXXXXXXX"
+
+# Diretório de saída padrão. Deixe vazio para salvar no mesmo diretório do vídeo.
+output = ""

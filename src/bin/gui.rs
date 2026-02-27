@@ -1,9 +1,21 @@
+use clap::Parser;
 use eframe::egui;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use encoder_lib::{config, encoder, metadata, slate};
+
+#[derive(Parser)]
+#[command(name = "encoder-gui", about = "GUI para claquete + encoding MXF XDCAM HD422")]
+struct GuiArgs {
+    /// Caminho do vídeo MP4 de entrada
+    video: Option<PathBuf>,
+
+    /// Perfil de cliente (subpasta em config/)
+    #[arg(short = 'C', long)]
+    client: Option<String>,
+}
 
 // --- Messages from background thread ---
 
@@ -15,6 +27,11 @@ enum EncoderMessage {
 // --- App State ---
 
 struct EncoderApp {
+    // Client selection
+    config_dir: PathBuf,
+    available_clients: Vec<String>,
+    selected_client: Option<String>, // None = config raiz
+
     // Config
     codes: HashMap<u32, String>,
     config_error: Option<String>,
@@ -37,6 +54,7 @@ struct EncoderApp {
 
     // Output
     output_dir: String,
+    default_output: String,
 
     // Registro warning
     registro_warning: Option<String>,
@@ -48,29 +66,70 @@ struct EncoderApp {
 }
 
 impl EncoderApp {
-    fn new(initial_video: Option<PathBuf>) -> Self {
+    fn new(initial_video: Option<PathBuf>, initial_client: Option<String>) -> Self {
         let config_dir = find_config_dir();
-        let mut defaults = None;
-        let mut codes = HashMap::new();
-        let mut config_error = None;
+        let available_clients = config::list_clients(&config_dir);
 
-        match config::load_defaults(&config_dir) {
-            Ok(d) => defaults = Some(d),
-            Err(e) => config_error = Some(format!("Erro ao carregar defaults.toml: {e}")),
+        // Validar que o cliente solicitado existe
+        let selected_client = initial_client.filter(|c| available_clients.contains(c));
+
+        let mut app = Self {
+            config_dir: config_dir.clone(),
+            available_clients,
+            selected_client: selected_client.clone(),
+            codes: HashMap::new(),
+            config_error: None,
+            video_path: None,
+            video_meta: None,
+            probe_error: None,
+            titulo: String::new(),
+            produto: String::new(),
+            duracao: String::new(),
+            produtora: String::new(),
+            agencia: String::new(),
+            anunciante: String::new(),
+            diretor: String::new(),
+            registro: String::new(),
+            data: chrono::Datelike::year(&chrono::Local::now()).to_string(),
+            output_dir: String::new(),
+            default_output: String::new(),
+            registro_warning: None,
+            encoding: false,
+            result_message: None,
+            rx: None,
+        };
+
+        app.reload_config();
+
+        if let Some(path) = initial_video {
+            app.load_video(path);
         }
 
-        match config::load_codes(&config_dir) {
-            Ok(c) => codes = c,
+        app
+    }
+
+    fn reload_config(&mut self) {
+        self.config_error = None;
+        let client_ref = self.selected_client.as_deref();
+
+        let mut defaults = None;
+        self.codes = HashMap::new();
+
+        match config::load_defaults_for(&self.config_dir, client_ref) {
+            Ok(d) => defaults = Some(d),
+            Err(e) => self.config_error = Some(format!("Erro ao carregar defaults.toml: {e}")),
+        }
+
+        match config::load_codes_for(&self.config_dir, client_ref) {
+            Ok(c) => self.codes = c,
             Err(e) => {
                 let msg = format!("Erro ao carregar codes.toml: {e}");
-                config_error = Some(match config_error {
+                self.config_error = Some(match self.config_error.take() {
                     Some(prev) => format!("{prev}\n{msg}"),
                     None => msg,
                 });
             }
         }
-
-        let ano = chrono::Datelike::year(&chrono::Local::now()).to_string();
 
         let (produto, produtora, agencia, anunciante, diretor) = match &defaults {
             Some(d) => (
@@ -89,33 +148,53 @@ impl EncoderApp {
             ),
         };
 
-        let mut app = Self {
-            codes,
-            config_error,
-            video_path: None,
-            video_meta: None,
-            probe_error: None,
-            titulo: String::new(),
-            produto,
-            duracao: String::new(),
-            produtora,
-            agencia,
-            anunciante,
-            diretor,
-            registro: String::new(),
-            data: ano,
-            output_dir: "./output".to_string(),
-            registro_warning: None,
-            encoding: false,
-            result_message: None,
-            rx: None,
-        };
+        self.produto = produto;
+        self.produtora = produtora;
+        self.agencia = agencia;
+        self.anunciante = anunciante;
+        self.diretor = diretor;
 
-        if let Some(path) = initial_video {
-            app.load_video(path);
+        self.default_output = defaults
+            .as_ref()
+            .map(|d| d.output.clone())
+            .unwrap_or_default();
+        self.output_dir = self.default_output.clone();
+
+        // Re-resolve registro if a video is loaded
+        if self.video_path.is_some() {
+            self.resolve_current_registro();
         }
+    }
 
-        app
+    fn resolve_current_registro(&mut self) {
+        self.registro_warning = None;
+        let filename = self
+            .video_path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        if filename.is_empty() {
+            return;
+        }
+        let code = config::extract_code_from_filename(filename);
+        match code {
+            Some(c) => match config::lookup_registro(c, &self.codes) {
+                Some(reg) => self.registro = reg,
+                None => {
+                    self.registro.clear();
+                    self.registro_warning = Some(format!(
+                        "Código {c} não encontrado na tabela de registros"
+                    ));
+                }
+            },
+            None => {
+                self.registro.clear();
+                self.registro_warning = Some(
+                    "Não foi possível extrair código do nome do arquivo".to_string(),
+                );
+            }
+        }
     }
 
     fn select_video(&mut self) {
@@ -177,9 +256,11 @@ impl EncoderApp {
             }
         }
 
-        // Default output dir next to the video
-        if let Some(parent) = path.parent() {
-            self.output_dir = parent.join("output").display().to_string();
+        // Output dir: usa config se definido, senão usa diretório do vídeo
+        if !self.default_output.is_empty() {
+            self.output_dir = self.default_output.clone();
+        } else if let Some(parent) = path.parent() {
+            self.output_dir = parent.display().to_string();
         }
 
         self.video_path = Some(path);
@@ -271,6 +352,7 @@ fn run_encode(
         agencia: agencia.to_string(),
         anunciante: anunciante.to_string(),
         diretor: diretor.to_string(),
+        output: String::new(),
     };
 
     let slate_data = slate::SlateData::new(titulo, duracao, registro, data, &defaults);
@@ -322,6 +404,44 @@ impl eframe::App for EncoderApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Encoder - Claquete + MXF XDCAM HD422");
             ui.add_space(8.0);
+
+            // --- Client selector (only if clients exist) ---
+            if !self.available_clients.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label("Cliente:");
+                    let current_label = self
+                        .selected_client
+                        .as_deref()
+                        .unwrap_or("(Padrão)");
+                    egui::ComboBox::from_id_salt("client_selector")
+                        .selected_text(current_label)
+                        .show_ui(ui, |ui| {
+                            let mut changed = false;
+                            if ui
+                                .selectable_value(&mut self.selected_client, None, "(Padrão)")
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                            for client in self.available_clients.clone() {
+                                if ui
+                                    .selectable_value(
+                                        &mut self.selected_client,
+                                        Some(client.clone()),
+                                        &client,
+                                    )
+                                    .changed()
+                                {
+                                    changed = true;
+                                }
+                            }
+                            if changed {
+                                self.reload_config();
+                            }
+                        });
+                });
+                ui.add_space(4.0);
+            }
 
             // Config error banner
             if let Some(err) = &self.config_error {
@@ -511,11 +631,9 @@ fn main() -> eframe::Result {
         eprintln!("Aviso: {e}");
     }
 
-    // Accept optional video path as first argument (for context menu integration)
-    let initial_video = std::env::args_os()
-        .nth(1)
-        .map(PathBuf::from)
-        .filter(|p| p.exists());
+    let args = GuiArgs::parse();
+    let initial_video = args.video.filter(|p| p.exists());
+    let initial_client = args.client;
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -527,6 +645,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Encoder - Claquete + MXF",
         options,
-        Box::new(|_cc| Ok(Box::new(EncoderApp::new(initial_video)))),
+        Box::new(|_cc| Ok(Box::new(EncoderApp::new(initial_video, initial_client)))),
     )
 }

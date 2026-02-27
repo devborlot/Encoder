@@ -10,6 +10,8 @@ pub struct Defaults {
     pub agencia: String,
     pub anunciante: String,
     pub diretor: String,
+    #[serde(default)]
+    pub output: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -17,8 +19,22 @@ struct CodesFileRaw {
     codes: HashMap<String, String>,
 }
 
+/// Resolve o diretório de configuração efetivo.
+/// Se `client` for informado, retorna `config_dir/client/`.
+fn resolve_config_path(config_dir: &Path, client: Option<&str>) -> std::path::PathBuf {
+    match client {
+        Some(name) => config_dir.join(name),
+        None => config_dir.to_path_buf(),
+    }
+}
+
 pub fn load_defaults(config_dir: &Path) -> Result<Defaults> {
-    let path = config_dir.join("defaults.toml");
+    load_defaults_for(config_dir, None)
+}
+
+pub fn load_defaults_for(config_dir: &Path, client: Option<&str>) -> Result<Defaults> {
+    let dir = resolve_config_path(config_dir, client);
+    let path = dir.join("defaults.toml");
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Não foi possível ler {}", path.display()))?;
     let defaults: Defaults =
@@ -27,7 +43,12 @@ pub fn load_defaults(config_dir: &Path) -> Result<Defaults> {
 }
 
 pub fn load_codes(config_dir: &Path) -> Result<HashMap<u32, String>> {
-    let path = config_dir.join("codes.toml");
+    load_codes_for(config_dir, None)
+}
+
+pub fn load_codes_for(config_dir: &Path, client: Option<&str>) -> Result<HashMap<u32, String>> {
+    let dir = resolve_config_path(config_dir, client);
+    let path = dir.join("codes.toml");
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Não foi possível ler {}", path.display()))?;
     let raw: CodesFileRaw = toml::from_str(&content)
@@ -38,6 +59,25 @@ pub fn load_codes(config_dir: &Path) -> Result<HashMap<u32, String>> {
         .filter_map(|(k, v)| k.parse::<u32>().ok().map(|n| (n, v)))
         .collect();
     Ok(codes)
+}
+
+/// Lista subpastas de `config_dir` que contenham `defaults.toml` e `codes.toml`.
+/// Retorna os nomes das subpastas (nomes dos clientes), ordenados alfabeticamente.
+pub fn list_clients(config_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(config_dir) else {
+        return Vec::new();
+    };
+    let mut clients: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+        .filter(|e| {
+            let p = e.path();
+            p.join("defaults.toml").exists() && p.join("codes.toml").exists()
+        })
+        .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+        .collect();
+    clients.sort();
+    clients
 }
 
 /// Extrai o código numérico do nome do arquivo.

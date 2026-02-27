@@ -169,9 +169,8 @@ Ou com video pre-carregado:
 
 Para adicionar a opcao "Abrir com Encoder" no clique-direito de arquivos de video:
 
-1. Edite o arquivo `install-context-menu.reg`
-2. Ajuste o caminho do executavel para o local correto no servidor
-3. Execute o `.reg` como administrador
+1. Execute `install-context-menu.bat` como administrador
+2. O script detecta o diretorio automaticamente e registra o menu de contexto
 
 Para remover: execute `uninstall-context-menu.reg`.
 

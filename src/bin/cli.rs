@@ -24,6 +24,10 @@ struct Cli {
     #[arg(short, long)]
     config: Option<PathBuf>,
 
+    /// Perfil de cliente (subpasta em config/)
+    #[arg(short = 'C', long)]
+    client: Option<String>,
+
     /// Verificar se FFmpeg/FFprobe estão no PATH
     #[arg(long)]
     check: bool,
@@ -43,6 +47,10 @@ enum Commands {
         /// Diretório de configuração
         #[arg(short, long)]
         config: Option<PathBuf>,
+
+        /// Perfil de cliente (subpasta em config/)
+        #[arg(short = 'C', long)]
+        client: Option<String>,
     },
 }
 
@@ -58,18 +66,21 @@ fn main() -> Result<()> {
             lista,
             output,
             config,
+            client,
         }) => {
             let config_dir = config.unwrap_or_else(|| PathBuf::from("config"));
-            let output_dir = output.unwrap_or_else(|| PathBuf::from("output"));
-            run_batch(&lista, &config_dir, &output_dir)
+            let client_ref = client.as_deref();
+            let output_dir = resolve_output_dir(output, &config_dir, None, client_ref);
+            run_batch(&lista, &config_dir, &output_dir, client_ref)
         }
         None => {
             let video = cli.video.context(
                 "Informe o caminho do vídeo. Uso: encoder <video.mp4> [--output <dir>]",
             )?;
             let config_dir = cli.config.unwrap_or_else(|| PathBuf::from("config"));
-            let output_dir = cli.output.unwrap_or_else(|| PathBuf::from("output"));
-            process_video(&video, &config_dir, &output_dir)
+            let client_ref = cli.client.as_deref();
+            let output_dir = resolve_output_dir(cli.output, &config_dir, Some(&video), client_ref);
+            process_video(&video, &config_dir, &output_dir, client_ref)
         }
     }
 }
@@ -87,7 +98,7 @@ fn check_dependencies() -> Result<()> {
     }
 }
 
-fn process_video(video_path: &Path, config_dir: &Path, output_dir: &Path) -> Result<()> {
+fn process_video(video_path: &Path, config_dir: &Path, output_dir: &Path, client: Option<&str>) -> Result<()> {
     // 1. Verificar FFmpeg
     metadata::check_ffmpeg().context("FFmpeg/FFprobe não encontrado no PATH")?;
 
@@ -97,8 +108,8 @@ fn process_video(video_path: &Path, config_dir: &Path, output_dir: &Path) -> Res
     }
 
     // 3. Carregar configurações
-    let defaults = config::load_defaults(config_dir)?;
-    let codes = config::load_codes(config_dir)?;
+    let defaults = config::load_defaults_for(config_dir, client)?;
+    let codes = config::load_codes_for(config_dir, client)?;
 
     // 4. Ler metadados do vídeo
     println!("Lendo metadados de {}...", video_path.display());
@@ -223,7 +234,36 @@ fn ask_registro_manual() -> Result<String> {
     Ok(registro)
 }
 
-fn run_batch(lista_path: &Path, config_dir: &Path, output_dir: &Path) -> Result<()> {
+/// Resolve o diretório de saída com a seguinte prioridade:
+/// 1. Flag --output da linha de comando
+/// 2. Campo `output` no defaults.toml (do cliente, se informado)
+/// 3. Mesmo diretório do vídeo de entrada (ou "." se não houver vídeo)
+fn resolve_output_dir(flag: Option<PathBuf>, config_dir: &Path, video: Option<&PathBuf>, client: Option<&str>) -> PathBuf {
+    // 1. Flag explícita
+    if let Some(dir) = flag {
+        return dir;
+    }
+
+    // 2. Config
+    if let Ok(defaults) = config::load_defaults_for(config_dir, client) {
+        if !defaults.output.is_empty() {
+            return PathBuf::from(&defaults.output);
+        }
+    }
+
+    // 3. Mesmo diretório do vídeo
+    if let Some(video_path) = video {
+        if let Some(parent) = video_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                return parent.to_path_buf();
+            }
+        }
+    }
+
+    PathBuf::from(".")
+}
+
+fn run_batch(lista_path: &Path, config_dir: &Path, output_dir: &Path, client: Option<&str>) -> Result<()> {
     #[derive(serde::Deserialize)]
     struct BatchFile {
         videos: Vec<String>,
@@ -245,7 +285,7 @@ fn run_batch(lista_path: &Path, config_dir: &Path, output_dir: &Path) -> Result<
             video
         );
         let path = PathBuf::from(video);
-        if let Err(e) = process_video(&path, config_dir, output_dir) {
+        if let Err(e) = process_video(&path, config_dir, output_dir, client) {
             eprintln!("ERRO: {e}");
             errors.push((video.clone(), e));
         }
