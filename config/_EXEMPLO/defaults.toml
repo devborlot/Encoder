@@ -1,0 +1,14 @@
+# Configuração do cliente
+# Copie esta pasta com o nome do cliente (ex: config/SIPOLATTI/)
+# e ajuste os valores abaixo.
+
+produto = "NOME DO PRODUTO"
+produtora = "NOME DA PRODUTORA"
+agencia = "NOME DA AGÊNCIA"
+anunciante = "NOME DO ANUNCIANTE"
+diretor = "NOME DO DIRETOR"
+
+# Diretório de saída padrão para este cliente.
+# Deixe vazio para salvar no mesmo diretório do vídeo.
+# Exemplo: output = "C:\\Videos\\Cliente\\output"
+output = ""
