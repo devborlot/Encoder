@@ -1,4 +1,6 @@
 /target
-/dist
 *.exe
 *.pdb
+
+# Permitir executáveis no dist
+!dist/**/*.exe

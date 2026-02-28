@@ -1,0 +1,12 @@
+# Tabela de códigos ANCINE do cliente
+# Cada entrada mapeia um número (extraído do nome do arquivo) para o registro ANCINE.
+# Exemplo: arquivo "FEV_PROMO_17.mp4" → busca código 17 → registro abaixo.
+#
+# Códigos acima de 50 são tratados como versão alternativa:
+# código 60 busca registro do 20 (60-40=20), 71 busca 31, etc.
+
+[codes]
+1 = "0000000000001-0"
+2 = "0000000000002-0"
+3 = "0000000000003-0"
+# ... adicionar os códigos reais do cliente
