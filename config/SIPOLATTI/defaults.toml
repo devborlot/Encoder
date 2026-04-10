@@ -1,0 +1,28 @@
+produto = "VÁRIOS"
+produtora = "POST.E"
+agencia = "C3 Comunicação"
+anunciante = "SIPOLATTI"
+diretor = "XXXXXXXXXXXXXXXXX"
+
+# Diretório de saída padrão para este cliente.
+# Deixe vazio para salvar no mesmo diretório do vídeo.
+output = "D:\\SIPOLATTI\\SAIDA"
+
+# Configuração de envio para o Peach
+[peach]
+avisador_id = "BRA0743"
+cnpj_avisador = "30689848000130"
+id_marca = 9758
+id_producto = 25322
+agencia_id = "BR0741"
+cnpj_agencia = "01936260000136"
+
+# Destinos (emissoras) disponíveis para distribuição. A GUI mostra
+# checkboxes pra escolher quais usar em cada envio.
+[peach.destinos]
+hd = [
+    { id = "BR_GLOBO_112", nome = "TV Santa Cruz (Itabuna/BA)" },
+    { id = "BR_GLOBO_79",  nome = "TV Gazeta Vitória (ES)" },
+    { id = "BR1230",       nome = "TV Vitória (Record/ES)" },
+]
+sd = []

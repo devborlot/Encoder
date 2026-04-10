@@ -4,6 +4,14 @@ use std::process::Command;
 
 use crate::metadata::VideoMetadata;
 
+/// Duração da claquete (slate) que o encoder sempre adiciona no início.
+pub const SLATE_DURATION_SECS: u64 = 5;
+/// Duração do "preto" entre claquete e vídeo principal.
+pub const BLACK_DURATION_SECS: u64 = 2;
+/// Total fixo (slate + black) que separa o conteúdo comercial.
+/// Use isso pra calcular a duração comercial subtraindo do MXF gerado.
+pub const SLATE_BLACK_TOTAL_SECS: u64 = SLATE_DURATION_SECS + BLACK_DURATION_SECS;
+
 /// Retorna filtro FFmpeg para ajustar duração ao segundo exato.
 /// Frames a mais: trim. Frames faltando: congela último frame.
 fn duration_adjust_filter(metadata: &VideoMetadata) -> String {
@@ -30,15 +38,17 @@ pub fn encode(
     output_path: &Path,
     metadata: &VideoMetadata,
 ) -> Result<()> {
-    let slate_duration = 5;
-    let black_duration = 2;
-    let silence_duration = slate_duration + black_duration;
+    let slate_duration = SLATE_DURATION_SECS;
+    let black_duration = BLACK_DURATION_SECS;
+    let silence_duration = (slate_duration + black_duration) as i32;
 
     // Construir filter_complex baseado no áudio do source
     let filter_complex = build_filter_complex(metadata, silence_duration);
 
     let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-y"]); // Sobrescrever sem perguntar
+    cmd.env("QT_LOGGING_RULES", "*=false");
+    cmd.env("QT_QPA_PLATFORM", "windows");
+    cmd.args(["-y", "-hide_banner", "-loglevel", "error"]);
 
     // Input 0: slate image (loop)
     cmd.args([
@@ -112,15 +122,15 @@ pub fn encode(
     cmd.args(["-f", "mxf"]);
     cmd.arg(output_path);
 
-    println!("Executando FFmpeg...");
-    println!(
+    crate::log::emit("Executando FFmpeg...");
+    crate::log::emit(format!(
         "  Slate: {}s | Black: {}s | Vídeo: {}s",
         slate_duration, black_duration, metadata.duration_secs
-    );
-    println!(
+    ));
+    crate::log::emit(format!(
         "  Duração total: {}s",
         silence_duration as u64 + metadata.duration_secs
-    );
+    ));
 
     let output = cmd
         .output()
@@ -142,7 +152,7 @@ pub fn encode(
         bail!("FFmpeg falhou:\n{last_lines}");
     }
 
-    println!("Encoding concluído: {}", output_path.display());
+    crate::log::emit(format!("Encoding concluído: {}", output_path.display()));
     Ok(())
 }
 
@@ -165,7 +175,9 @@ pub fn encode_agency(
     let video_kbps = video_kbps.max(500).min(5000);
 
     let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-y"]);
+    cmd.env("QT_LOGGING_RULES", "*=false");
+    cmd.env("QT_QPA_PLATFORM", "windows");
+    cmd.args(["-y", "-hide_banner", "-loglevel", "error"]);
 
     // Input com NVDEC
     cmd.args(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]);
@@ -205,8 +217,10 @@ pub fn encode_agency(
     cmd.args(["-movflags", "+faststart"]);
     cmd.arg(output_path);
 
-    println!("Encodando versão agência (MP4 ~7MB)...");
-    println!("  Bitrate vídeo: {video_kbps}kbps | Áudio: {audio_kbps}kbps");
+    crate::log::emit("Encodando versão agência (MP4 ~7MB)...");
+    crate::log::emit(format!(
+        "  Bitrate vídeo: {video_kbps}kbps | Áudio: {audio_kbps}kbps"
+    ));
 
     let output = cmd.output().context("Falha ao executar FFmpeg (agência)")?;
 
@@ -225,7 +239,7 @@ pub fn encode_agency(
         bail!("FFmpeg (agência) falhou:\n{last_lines}");
     }
 
-    println!("Versão agência concluída: {}", output_path.display());
+    crate::log::emit(format!("Versão agência concluída: {}", output_path.display()));
     Ok(())
 }
 

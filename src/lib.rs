@@ -1,7 +1,9 @@
 pub mod config;
 pub mod encoder;
 pub mod error;
+pub mod log;
 pub mod metadata;
+pub mod peach;
 pub mod slate;
 
 use anyhow::{bail, Result};

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use encoder_lib::{config, encoder, metadata, slate};
+use encoder_lib::{config, encoder, metadata, peach, slate};
 
 #[derive(Parser)]
 #[command(name = "encoder", about = "Automação de claquete + encoding MXF XDCAM HD422")]
@@ -52,6 +52,49 @@ enum Commands {
         #[arg(short = 'C', long)]
         client: Option<String>,
     },
+    /// Comandos de integração com a plataforma Peach
+    Peach {
+        #[command(subcommand)]
+        action: PeachAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum PeachAction {
+    /// Validar credenciais e sessão
+    Login {
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
+    /// Enviar um VT já encodado (MXF) para o Peach
+    Upload {
+        /// Caminho do arquivo MXF
+        video: PathBuf,
+        /// Perfil de cliente (subpasta em config/)
+        #[arg(short = 'C', long)]
+        client: String,
+        /// Diretório de configuração
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+        /// Override do código ANCINE (sem traço). Se omitido, extrai do nome do arquivo.
+        #[arg(long)]
+        codigo: Option<String>,
+    },
+    /// Distribuir spots já uploadados para emissoras
+    Send {
+        /// Spot IDs (numéricos, extraídos do destination do upload)
+        #[arg(required = true)]
+        spots: Vec<u64>,
+        /// Perfil de cliente (subpasta em config/) — usa os destinos configurados em [peach.destinos]
+        #[arg(short = 'C', long)]
+        client: String,
+        /// Diretório de configuração
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+        /// Lista CSV de IDs de destinos pra usar (override). Ex: "BR_GLOBO_112,BR1230". Se omitido, usa todos do [peach.destinos].
+        #[arg(long, value_delimiter = ',')]
+        destinos: Option<Vec<String>>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -73,6 +116,7 @@ fn main() -> Result<()> {
             let output_dir = resolve_output_dir(output, &config_dir, None, client_ref);
             run_batch(&lista, &config_dir, &output_dir, client_ref)
         }
+        Some(Commands::Peach { action }) => run_peach(action),
         None => {
             let video = cli.video.context(
                 "Informe o caminho do vídeo. Uso: encoder <video.mp4> [--output <dir>]",
@@ -301,5 +345,280 @@ fn run_batch(lista_path: &Path, config_dir: &Path, output_dir: &Path, client: Op
         }
     }
 
+    Ok(())
+}
+
+// ----------------- Peach -----------------
+
+fn run_peach(action: PeachAction) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new().context("falha ao iniciar runtime tokio")?;
+    rt.block_on(async {
+        match action {
+            PeachAction::Login { config } => peach_login(config).await,
+            PeachAction::Upload {
+                video,
+                client,
+                config,
+                codigo,
+            } => peach_upload(video, client, config, codigo).await,
+            PeachAction::Send {
+                spots,
+                client,
+                config,
+                destinos,
+            } => peach_send(spots, client, config, destinos).await,
+        }
+    })
+}
+
+async fn peach_login(config: Option<PathBuf>) -> Result<()> {
+    let config_dir = config.unwrap_or_else(|| PathBuf::from("config"));
+    let creds = peach::PeachCredentials::load(&config_dir)?;
+
+    println!("Fazendo login em latam.peachvideo.com como {}...", creds.email);
+    let client = peach::PeachClient::new()?;
+    let session = client.login(&creds.email, &creds.password).await?;
+
+    println!("\n✅ Login OK");
+    println!("  Usuário: {} <{}>", session.nombre_usuario_activo, session.id_email);
+    println!("  Empresa: {} ({})", session.empresa_nombre, session.id_empresa);
+    println!("  Privilégios: {:?}", session.privilegios);
+    println!("  Extensões permitidas: {:?}", session.extension_permitida);
+    Ok(())
+}
+
+async fn peach_upload(
+    video: PathBuf,
+    client_name: String,
+    config: Option<PathBuf>,
+    codigo_override: Option<String>,
+) -> Result<()> {
+    if !video.exists() {
+        bail!("Arquivo não encontrado: {}", video.display());
+    }
+
+    let config_dir = config.unwrap_or_else(|| PathBuf::from("config"));
+    let creds = peach::PeachCredentials::load(&config_dir)?;
+
+    // Carrega defaults com bloco [peach]
+    let defaults_full =
+        peach::config::DefaultsWithPeach::load(&config_dir, Some(&client_name))?;
+    let peach_cfg = defaults_full.peach.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Cliente '{}' não tem bloco [peach] configurado em defaults.toml",
+            client_name
+        )
+    })?;
+
+    // Carrega tabela de códigos do cliente
+    let codes = config::load_codes_for(&config_dir, Some(&client_name))?;
+
+    // Probe metadata do vídeo
+    println!("Lendo metadados de {}...", video.display());
+    let meta = metadata::probe(&video)?;
+
+    let filename = video
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow::anyhow!("nome de arquivo inválido"))?;
+    let pieza = Path::new(filename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(filename);
+
+    // Resolve código ANCINE
+    let codigo = match codigo_override {
+        Some(c) => c,
+        None => peach::resolve_codigo_from_filename(filename, &codes).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Não foi possível extrair código de '{}' a partir da tabela de códigos do cliente",
+                filename
+            )
+        })?,
+    };
+
+    let framerate_str = format!("{:.2}", meta.fps_num as f64 / meta.fps_den as f64);
+
+    // Se for MXF gerado pelo nosso encoder, desconta a claquete (5s slate + 2s preto)
+    // pra obter a duração comercial — que é o que o Peach espera no campo `segundos`.
+    let is_mxf = video
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("mxf"))
+        .unwrap_or(false);
+    let commercial_secs = if is_mxf {
+        meta.duration_secs
+            .saturating_sub(encoder::SLATE_BLACK_TOTAL_SECS)
+    } else {
+        meta.duration_secs
+    };
+
+    let params = peach::UploadParams {
+        video_path: &video,
+        pieza,
+        codigo: &codigo,
+        framerate: &framerate_str,
+        duration_secs: commercial_secs,
+    };
+
+    println!("Iniciando upload no Peach:");
+    println!("  pieza:    {}", pieza);
+    println!("  codigo:   {}", codigo);
+    if is_mxf {
+        println!(
+            "  duração:  {}s (total {}s - {}s claquete)",
+            commercial_secs,
+            meta.duration_secs,
+            encoder::SLATE_BLACK_TOTAL_SECS
+        );
+    } else {
+        println!("  duração:  {}s", commercial_secs);
+    }
+    println!("  fps:      {}", framerate_str);
+    println!("  cliente:  {}", client_name);
+
+    // Login
+    println!("\nFazendo login...");
+    let pclient = peach::PeachClient::new()?;
+    let session = pclient.login(&creds.email, &creds.password).await?;
+    println!("✅ Logado como {} ({})", session.nombre_usuario_activo, session.id_empresa);
+
+    // Init upload (obtém STS)
+    println!("\nObtendo credenciais STS...");
+    let sts = pclient
+        .init_upload(&params, &peach_cfg, &creds.productora_id)
+        .await?;
+    println!("✅ id_envio: {}", sts.id_envio);
+    println!("   destination: {}", sts.destination);
+
+    // Upload S3
+    println!("\nUpload S3 multipart...");
+    let file_size = std::fs::metadata(&video)?.len();
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    let last_pct = Arc::new(AtomicU64::new(0));
+    let last_pct_cb = Arc::clone(&last_pct);
+
+    peach::upload::s3_multipart_upload(&video, &sts, move |sent, total| {
+        let pct = sent * 100 / total;
+        let prev = last_pct_cb.load(Ordering::Relaxed);
+        if pct >= prev + 5 || sent == total {
+            print!("\r  {} / {} bytes ({}%)", sent, total, pct);
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            last_pct_cb.store(pct, Ordering::Relaxed);
+        }
+    })
+    .await?;
+
+    println!("\n\n✅ Upload concluído!");
+    println!("  Arquivo: {} ({} bytes)", video.display(), file_size);
+    if let Some(sid) = sts.spot_id() {
+        println!(
+            "  spot_id: {sid}  (use em `encoder peach send {sid} --client {client_name}`)"
+        );
+    }
+    println!("  Verifique no portal latam.peachvideo.com em 'Subir'.");
+
+    Ok(())
+}
+
+async fn peach_send(
+    spots: Vec<u64>,
+    client_name: String,
+    config: Option<PathBuf>,
+    destinos_filter: Option<Vec<String>>,
+) -> Result<()> {
+    let config_dir = config.unwrap_or_else(|| PathBuf::from("config"));
+    let creds = peach::PeachCredentials::load(&config_dir)?;
+
+    let defaults_full =
+        peach::config::DefaultsWithPeach::load(&config_dir, Some(&client_name))?;
+    let peach_cfg = defaults_full.peach.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Cliente '{}' não tem bloco [peach] configurado em defaults.toml",
+            client_name
+        )
+    })?;
+
+    if peach_cfg.destinos.is_empty() {
+        bail!(
+            "Cliente '{}' não tem destinos configurados em [peach.destinos]. Adicione `hd = [...]` no defaults.toml.",
+            client_name
+        );
+    }
+
+    // Filtra os destinos: se --destinos foi passado, usa apenas os IDs dessa lista
+    let filter_set: Option<std::collections::HashSet<String>> = destinos_filter.map(|v| {
+        v.into_iter().map(|s| s.trim().to_string()).collect()
+    });
+
+    let select_destinos = |list: &Vec<peach::DestinoEntry>| -> Vec<String> {
+        list.iter()
+            .filter_map(|d| {
+                let id = d.id();
+                if let Some(set) = &filter_set {
+                    if !set.contains(id) {
+                        return None;
+                    }
+                }
+                Some(id.to_string())
+            })
+            .collect()
+    };
+
+    let hd_ids = select_destinos(&peach_cfg.destinos.hd);
+    let sd_ids = select_destinos(&peach_cfg.destinos.sd);
+
+    if hd_ids.is_empty() && sd_ids.is_empty() {
+        bail!("Nenhum destino selecionado após o filtro --destinos. IDs disponíveis: {:?}", peach_cfg.destinos.all_ids());
+    }
+
+    println!(
+        "Distribuindo {} spot(s) → {} HD + {} SD destino(s):",
+        spots.len(),
+        hd_ids.len(),
+        sd_ids.len(),
+    );
+    for sid in &spots {
+        println!("  spot_id: {sid}");
+    }
+    for d in &peach_cfg.destinos.hd {
+        if hd_ids.contains(&d.id().to_string()) {
+            println!("  HD → {} ({})", d.id(), d.label());
+        }
+    }
+    for d in &peach_cfg.destinos.sd {
+        if sd_ids.contains(&d.id().to_string()) {
+            println!("  SD → {} ({})", d.id(), d.label());
+        }
+    }
+
+    println!("\nFazendo login...");
+    let client = peach::PeachClient::new()?;
+    let session = client.login(&creds.email, &creds.password).await?;
+    println!(
+        "✅ Logado como {} ({})",
+        session.nombre_usuario_activo, session.id_empresa
+    );
+
+    let req = peach::SendRequest {
+        spot_ids: &spots,
+        destinos_hd: &hd_ids,
+        destinos_sd: &sd_ids,
+    };
+
+    println!("\nValidando spots × destinos...");
+    let val = client.validate_delivery(&req).await?;
+    println!("✅ validate: status={}", val.status);
+
+    println!("\nConfirmando envio...");
+    client.confirm_send(&req).await?;
+    println!("✅ confirm OK");
+
+    println!("\nExecutando envio...");
+    let summary = client.execute_send(&req).await?;
+    println!("\n✅ {summary}");
+    println!("\nVerifique no portal latam.peachvideo.com → Reportes.");
     Ok(())
 }

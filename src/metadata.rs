@@ -21,20 +21,26 @@ impl VideoMetadata {
     }
 }
 
+/// Configura variáveis de ambiente para suprimir warnings de Qt/log4cplus no Windows.
+fn suppress_qt_warnings(cmd: &mut Command) -> &mut Command {
+    cmd.env("QT_LOGGING_RULES", "*=false")
+        .env("QT_QPA_PLATFORM", "windows")
+}
+
 pub fn check_ffmpeg() -> Result<()> {
-    Command::new("ffmpeg")
-        .arg("-version")
+    suppress_qt_warnings(Command::new("ffmpeg").arg("-version"))
         .output()
         .context("FFmpeg não encontrado no PATH")?;
-    Command::new("ffprobe")
-        .arg("-version")
+    suppress_qt_warnings(Command::new("ffprobe").arg("-version"))
         .output()
         .context("FFprobe não encontrado no PATH")?;
     Ok(())
 }
 
 pub fn probe(video_path: &Path) -> Result<VideoMetadata> {
-    let output = Command::new("ffprobe")
+    let mut cmd = Command::new("ffprobe");
+    suppress_qt_warnings(&mut cmd);
+    let output = cmd
         .args([
             "-v",
             "quiet",

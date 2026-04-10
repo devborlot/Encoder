@@ -4,3 +4,15 @@
 
 # Permitir executáveis no dist
 !dist/**/*.exe
+
+# Credenciais sensíveis (NUNCA committar)
+config/peach_credentials.toml
+**/peach_credentials.toml
+!**/peach_credentials.example.toml
+
+# State persistente da GUI (preferências locais)
+config/gui_state.toml
+**/gui_state.toml
+
+# Captures HAR de referência (podem conter dados sensíveis)
+ref/
