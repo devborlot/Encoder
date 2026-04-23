@@ -12,12 +12,14 @@
 
 pub mod auth;
 pub mod config;
+pub mod drive;
 pub mod send;
 pub mod status;
 pub mod upload;
 
 pub use auth::{PeachClient, SessionInfo};
 pub use config::{DestinoEntry, PeachConfig, PeachCredentials, PeachDestinos};
+pub use drive::{upload_mp4_zipped, DriveUploadResult};
 pub use send::{SendRequest, ValidateResponse};
 pub use status::SpotStatus;
 pub use upload::{StsCredentials, UploadParams};

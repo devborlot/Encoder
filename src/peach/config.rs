@@ -94,6 +94,10 @@ impl DestinoEntry {
 /// `BR_GLOBO_79` (TV Gazeta Vitória), `BR1230` (TV Vitória).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PeachDestinos {
+    /// IDs das listas de destinos salvas no portal Peach.
+    /// Chamadas via `lista_destinos.php` antes do validate pra setar contexto de sessão.
+    #[serde(default)]
+    pub id_listas: Vec<u32>,
     #[serde(default)]
     pub hd: Vec<DestinoEntry>,
     #[serde(default)]
@@ -175,6 +179,23 @@ pub struct PeachConfig {
     // --- Destinos para distribuição (envio para emissoras) ---
     #[serde(default)]
     pub destinos: PeachDestinos,
+
+    /// URL do webhook (Google Apps Script) pra registrar envios numa planilha compartilhada.
+    /// Formato: https://script.google.com/macros/s/.../exec
+    #[serde(default)]
+    pub webhook_url: String,
+
+    /// ID da pasta no Google Drive pra onde o MP4 agência será zipado e enviado
+    /// (se o checkbox "Compartilhar MP4" estiver marcado).
+    /// Extrair da URL da pasta: https://drive.google.com/drive/folders/<ID_AQUI>
+    #[serde(default)]
+    pub drive_folder_id: String,
+}
+
+impl PeachConfig {
+    pub fn has_destinos(&self) -> bool {
+        !self.destinos.is_empty()
+    }
 }
 
 fn default_formato() -> String {

@@ -8,8 +8,10 @@
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
+use std::path::Path;
 
 use super::auth::PeachClient;
+use super::config::PeachConfig;
 
 /// Resposta do endpoint `/amasv/public/delivery/validate`.
 #[derive(Debug, Deserialize)]
@@ -45,6 +47,74 @@ impl<'a> SendRequest<'a> {
 }
 
 impl PeachClient {
+    /// Pré-etapa: carrega uma lista de destinos salva no portal.
+    /// Isso seta contexto de sessão no servidor que torna o validate mais permissivo
+    /// (resolve o erro "Exhibidoras obrigatórios" quando há sub-emisoras).
+    pub async fn load_destinos_list(&self, id_lista: u32) -> Result<()> {
+        let url = format!(
+            "{}/amasv/app/modulos/enviar/lista_destinos.php",
+            self.base()
+        );
+        let res = self
+            .http
+            .post(&url)
+            .form(&[("accion", "buscar"), ("id_lista", &id_lista.to_string())])
+            .header("X-Requested-With", "XMLHttpRequest")
+            .header(
+                "Referer",
+                format!("{}/amasv/app/index_general.php", self.base()),
+            )
+            .send()
+            .await
+            .context("falha no POST lista_destinos")?;
+
+        if !res.status().is_success() {
+            bail!("lista_destinos retornou status {}", res.status());
+        }
+        crate::log::emit(format!(
+            "[peach] lista_destinos(id_lista={id_lista}) carregada"
+        ));
+        Ok(())
+    }
+
+    /// Pré-etapa: verifica quantidade de destinos com sub-emisoras obrigatórias.
+    /// Chama `exhibidor_emisoras.php` conforme o fluxo do portal.
+    pub async fn check_exhibidor_emisoras(&self, has_record: bool, has_redetv: bool) -> Result<u32> {
+        let url = format!(
+            "{}/amasv/app/modulos/enviar/exhibidor_emisoras.php",
+            self.base()
+        );
+        let res = self
+            .http
+            .post(&url)
+            .form(&[
+                ("accion", "getCantidadDestinosEmisoras"),
+                (
+                    "destino_record",
+                    if has_record { "true" } else { "false" },
+                ),
+                (
+                    "destino_redetv",
+                    if has_redetv { "true" } else { "false" },
+                ),
+            ])
+            .header("X-Requested-With", "XMLHttpRequest")
+            .header(
+                "Referer",
+                format!("{}/amasv/app/index_general.php", self.base()),
+            )
+            .send()
+            .await
+            .context("falha no POST exhibidor_emisoras")?;
+
+        let body = res.text().await.unwrap_or_default();
+        let count: u32 = body.trim().parse().unwrap_or(0);
+        crate::log::emit(format!(
+            "[peach] exhibidor_emisoras: cantidad={count}"
+        ));
+        Ok(count)
+    }
+
     /// Etapa 1: valida combinações spot×destino.
     /// Retorna `Ok(ValidateResponse)` com `Status:"Success"` se tudo ok.
     pub async fn validate_delivery(&self, req: &SendRequest<'_>) -> Result<ValidateResponse> {
@@ -205,13 +275,21 @@ impl PeachClient {
     /// 2. Chama `validate_delivery`. Se falhar só com erros de QC residuais,
     ///    retenta com backoff. Se falhar com erro estrutural (Exhibidoras), aborta.
     /// 3. Confirma e executa o envio.
-    pub async fn send_spots(&self, req: &SendRequest<'_>) -> Result<String> {
+    pub async fn send_spots(&self, req: &SendRequest<'_>, cfg: &PeachConfig) -> Result<String> {
         // Configuração de polling de status do spot
-        const SPOT_READY_MAX_ATTEMPTS: usize = 20; // 20 * 30s = 10 min
-        const SPOT_READY_DELAY_SECS: u64 = 30;
+        const SPOT_READY_MAX_ATTEMPTS: usize = 40; // 40 * 15s = 10 min
+        const SPOT_READY_DELAY_SECS: u64 = 15;
         // Configuração de retry de validate (pra QC residual)
         const MAX_QC_RETRIES: usize = 10;
         const QC_RETRY_DELAY_SECS: u64 = 30;
+
+        // Etapa 0: carrega listas de destinos (seta contexto de sessão no servidor)
+        for &id_lista in &cfg.destinos.id_listas {
+            self.load_destinos_list(id_lista).await?;
+        }
+
+        // Etapa 0b: check exhibidor_emisoras (necessário pro fluxo do portal)
+        self.check_exhibidor_emisoras(false, false).await?;
 
         // Etapa 1: aguarda cada spot ficar pronto pra envio
         for &spot_id in req.spot_ids {
@@ -226,6 +304,20 @@ impl PeachClient {
 
             if val.status == "Success" {
                 crate::log::emit("[peach] validate OK");
+                self.confirm_send(req).await?;
+                crate::log::emit("[peach] confirm_send OK");
+                let summary = self.execute_send(req).await?;
+                crate::log::emit(format!("[peach] {summary}"));
+                return Ok(summary);
+            }
+
+            // Warning: o Peach tem observações (QC, etc.) mas permite envio.
+            // Log dos warnings e prossegue como Success.
+            if val.status == "Warning" {
+                let warnings = extract_warnings_summary(&val.envios);
+                crate::log::emit(format!(
+                    "[peach] validate OK (com warnings): {warnings}"
+                ));
                 self.confirm_send(req).await?;
                 crate::log::emit("[peach] confirm_send OK");
                 let summary = self.execute_send(req).await?;
@@ -298,6 +390,29 @@ struct ValidateErrorAnalysis {
     non_qc_errors: usize,
 }
 
+/// Extrai um sumário dos warnings (ex: "QC: Spot contém observações QC; ...")
+fn extract_warnings_summary(envios: &serde_json::Value) -> String {
+    let Some(obj) = envios.as_object() else {
+        return "(sem detalhes)".to_string();
+    };
+    let mut msgs = Vec::new();
+    for (dest_key, envio) in obj {
+        let Some(warnings) = envio.get("Warnings").and_then(|w| w.as_array()) else {
+            continue;
+        };
+        for w in warnings {
+            let campo = w.get("Campo").and_then(|c| c.as_str()).unwrap_or("");
+            let msg = w.get("Mensaje").and_then(|m| m.as_str()).unwrap_or("");
+            msgs.push(format!("{dest_key} [{campo}]: {msg}"));
+        }
+    }
+    if msgs.is_empty() {
+        "(sem warnings detalhados)".to_string()
+    } else {
+        msgs.join(" | ")
+    }
+}
+
 /// Conta erros por tipo. QC errors são recuperáveis (timing), outros não.
 fn analyze_validate_errors(envios: &serde_json::Value) -> ValidateErrorAnalysis {
     let mut qc = 0;
@@ -340,6 +455,122 @@ fn format_destinos_confirm(empresas: &[String], codec: &str) -> String {
 }
 
 /// URL encode mínimo para os valores de destinos[] (apenas chars problemáticos).
+// ----------------- Log CSV -----------------
+
+/// Registro de um envio bem-sucedido.
+#[derive(Debug, Clone, Default)]
+pub struct SendLogEntry {
+    pub timestamp: String,
+    pub pieza: String,
+    pub codigo: String,
+    pub spot_id: u64,
+    pub destinos: String,
+    pub id_envio: String,
+    /// URL do MP4 agência no Google Drive (se compartilhado).
+    pub agencia_url: String,
+}
+
+/// Grava uma linha no CSV de log de envios.
+/// Cria o arquivo com cabeçalho se não existir, ou appenda se já existir.
+pub fn append_send_log(output_dir: &Path, entry: &SendLogEntry) -> Result<()> {
+    use std::io::Write;
+    let csv_path = output_dir.join("envios_log.csv");
+    let file_exists = csv_path.exists();
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&csv_path)
+        .with_context(|| format!("falha ao abrir {}", csv_path.display()))?;
+
+    if !file_exists {
+        writeln!(
+            file,
+            "data_hora,titulo,codigo_crt,spot_id,destinos,id_envio,agencia_url"
+        )?;
+    }
+
+    // Escapa campos com vírgula
+    let destinos_escaped = if entry.destinos.contains(',') {
+        format!("\"{}\"", entry.destinos)
+    } else {
+        entry.destinos.clone()
+    };
+
+    writeln!(
+        file,
+        "{},{},{},{},{},{},{}",
+        entry.timestamp,
+        entry.pieza,
+        entry.codigo,
+        entry.spot_id,
+        destinos_escaped,
+        entry.id_envio,
+        entry.agencia_url
+    )?;
+
+    crate::log::emit(format!(
+        "[peach] Log salvo em {}",
+        csv_path.display()
+    ));
+    Ok(())
+}
+
+/// Envia o registro de envio para um webhook (Google Apps Script → Google Sheets).
+/// Best-effort: não falha se o webhook não responder.
+pub async fn post_webhook(webhook_url: &str, entry: &SendLogEntry, cliente: &str) {
+    if webhook_url.is_empty() {
+        return;
+    }
+    let payload = serde_json::json!({
+        "timestamp": entry.timestamp,
+        "pieza": entry.pieza,
+        "codigo": entry.codigo,
+        "spot_id": entry.spot_id,
+        "destinos": entry.destinos,
+        "id_envio": entry.id_envio,
+        "cliente": cliente,
+        "agencia_url": entry.agencia_url,
+    });
+
+    crate::log::emit(format!("[peach] Enviando registro pro webhook..."));
+
+    let client = match reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            crate::log::emit(format!("[peach] Aviso: falha ao criar HTTP client pro webhook: {e}"));
+            return;
+        }
+    };
+
+    match client
+        .post(webhook_url)
+        .json(&payload)
+        .send()
+        .await
+    {
+        Ok(res) => {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            if status.is_success() || status.is_redirection() {
+                crate::log::emit(format!("[peach] Webhook OK ({})", status));
+            } else {
+                crate::log::emit(format!(
+                    "[peach] Aviso: webhook retornou {}: {}",
+                    status,
+                    &body[..body.len().min(200)]
+                ));
+            }
+        }
+        Err(e) => {
+            crate::log::emit(format!("[peach] Aviso: falha no webhook: {e}"));
+        }
+    }
+}
+
 fn urlencoding_minimal(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {

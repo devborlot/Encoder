@@ -27,6 +27,8 @@ struct GuiState {
     #[serde(default = "default_true")]
     distribute_after_upload: bool,
     #[serde(default)]
+    share_to_drive: bool,
+    #[serde(default)]
     output_per_client: HashMap<String, String>,
     /// Última seleção de destinos por cliente (key = nome do cliente, "" = padrão).
     /// Valor = lista de IDs marcados.
@@ -46,6 +48,7 @@ impl Default for GuiState {
             render_mp4: true,
             keep_mxf_after_send: false,
             distribute_after_upload: true,
+            share_to_drive: false,
             output_per_client: HashMap::new(),
             selected_destinos_per_client: HashMap::new(),
         }
@@ -136,6 +139,7 @@ struct EncoderApp {
     render_mp4: bool,
     keep_mxf_after_send: bool,
     distribute_after_upload: bool,
+    share_to_drive: bool,
     /// IDs dos destinos atualmente marcados (subconjunto do peach.destinos do cliente).
     selected_destinos: std::collections::HashSet<String>,
 
@@ -180,6 +184,7 @@ impl EncoderApp {
         let render_mp4 = state.render_mp4;
         let keep_mxf_after_send = state.keep_mxf_after_send;
         let distribute_after_upload = state.distribute_after_upload;
+        let share_to_drive = state.share_to_drive;
 
         let mut app = Self {
             config_dir: config_dir.clone(),
@@ -207,6 +212,7 @@ impl EncoderApp {
             render_mp4,
             keep_mxf_after_send,
             distribute_after_upload,
+            share_to_drive,
             selected_destinos: std::collections::HashSet::new(),
             state,
             registro_warning: None,
@@ -243,6 +249,7 @@ impl EncoderApp {
         self.state.render_mp4 = self.render_mp4;
         self.state.keep_mxf_after_send = self.keep_mxf_after_send;
         self.state.distribute_after_upload = self.distribute_after_upload;
+        self.state.share_to_drive = self.share_to_drive;
 
         let key = self.selected_client.clone().unwrap_or_default();
 
@@ -530,6 +537,19 @@ impl EncoderApp {
             None
         };
 
+        // Caso "Encodar" sozinho + Compartilhar: captura dados pro Drive standalone
+        let drive_only_ctx = if !then_upload && self.share_to_drive {
+            self.peach_cfg.as_ref().and_then(|cfg| {
+                if cfg.webhook_url.is_empty() || cfg.drive_folder_id.is_empty() {
+                    None
+                } else {
+                    Some((cfg.webhook_url.clone(), cfg.drive_folder_id.clone()))
+                }
+            })
+        } else {
+            None
+        };
+
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
         self.encoding = true;
@@ -602,8 +622,23 @@ impl EncoderApp {
                             }
                         }
                     } else {
-                        // Só encode, sem upload — sempre mantém MXF
-                        let _ = tx_thread.send(EncoderMessage::Finished(encode_result));
+                        // Só encode, sem upload — sempre mantém MXF.
+                        // Se checkbox Compartilhar estiver marcado, sobe MP4 pro Drive.
+                        let mut final_msg = encode_result;
+                        if let Some((webhook_url, folder_id)) = drive_only_ctx {
+                            let mp4_path = output_dir
+                                .join("agencia")
+                                .join(format!("{}.mp4", titulo));
+                            match run_drive_only(&mp4_path, &webhook_url, &folder_id, &tx_thread, &ctx) {
+                                Ok(url) => {
+                                    final_msg = format!("{final_msg}\n\nDrive: {url}");
+                                }
+                                Err(e) => {
+                                    final_msg = format!("{final_msg}\n\n[drive] Falhou: {e}");
+                                }
+                            }
+                        }
+                        let _ = tx_thread.send(EncoderMessage::Finished(final_msg));
                     }
                 }
                 Err(e) => {
@@ -720,6 +755,7 @@ impl EncoderApp {
             creds,
             codigo,
             distribute: self.distribute_after_upload,
+            share_to_drive: self.share_to_drive,
             destinos_hd,
             destinos_sd,
         })
@@ -733,6 +769,8 @@ struct UploadContext {
     codigo: String,
     /// Se true, após upload S3 distribui automaticamente para os destinos selecionados.
     distribute: bool,
+    /// Se true, zipa o MP4 agência e faz upload pro Google Drive (em paralelo com QC).
+    share_to_drive: bool,
     /// IDs HD a distribuir (já filtrados pela seleção da GUI).
     destinos_hd: Vec<String>,
     /// IDs SD a distribuir.
@@ -868,7 +906,44 @@ fn run_upload(
 
         let mut summary = format!("Upload Peach OK | id_envio={}", sts.id_envio);
 
-        // Distribuição para emissoras (se habilitada e há destinos selecionados)
+        // --- Drive upload em paralelo (se habilitado) ---
+        let mp4_agencia_path = mxf_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("agencia")
+            .join(format!("{}.mp4", titulo));
+
+        let drive_future = if uctx.share_to_drive
+            && !uctx.cfg.webhook_url.is_empty()
+            && !uctx.cfg.drive_folder_id.is_empty()
+            && mp4_agencia_path.exists()
+        {
+            let webhook = uctx.cfg.webhook_url.clone();
+            let folder = uctx.cfg.drive_folder_id.clone();
+            let path = mp4_agencia_path.clone();
+            encoder_lib::log::emit(
+                "[drive] Iniciando upload do MP4 agência em paralelo com QC...",
+            );
+            Some(tokio::spawn(async move {
+                peach::drive::upload_mp4_zipped(&webhook, &path, &folder).await
+            }))
+        } else {
+            if uctx.share_to_drive {
+                encoder_lib::log::emit(format!(
+                    "[drive] Compartilhamento habilitado mas faltam prerrequisitos: \
+                     webhook_url={} folder_id={} mp4_existe={}",
+                    !uctx.cfg.webhook_url.is_empty(),
+                    !uctx.cfg.drive_folder_id.is_empty(),
+                    mp4_agencia_path.exists()
+                ));
+            }
+            None
+        };
+
+        // --- Distribuição para emissoras ---
+        // Info do envio (se distribuiu) pra depois gerar o log com a URL do Drive
+        let mut send_info: Option<(u64, Vec<String>)> = None;
+
         if uctx.distribute {
             if uctx.destinos_hd.is_empty() && uctx.destinos_sd.is_empty() {
                 encoder_lib::log::emit(
@@ -899,13 +974,103 @@ fn run_upload(
                     destinos_sd: &uctx.destinos_sd,
                 };
 
-                let send_summary = client.send_spots(&req).await?;
+                let send_summary = client.send_spots(&req, &uctx.cfg).await?;
                 summary = format!("{summary}\n{send_summary}");
+
+                let destinos_labels: Vec<String> = uctx
+                    .cfg
+                    .destinos
+                    .hd
+                    .iter()
+                    .chain(uctx.cfg.destinos.sd.iter())
+                    .filter(|d| {
+                        uctx.destinos_hd.contains(&d.id().to_string())
+                            || uctx.destinos_sd.contains(&d.id().to_string())
+                    })
+                    .map(|d| d.label().to_string())
+                    .collect();
+                send_info = Some((spot_id, destinos_labels));
             }
+        }
+
+        // --- Aguarda Drive (único consumo do drive_future) ---
+        let mut agencia_url = String::new();
+        if let Some(handle) = drive_future {
+            agencia_url = await_drive(handle).await;
+            if !agencia_url.is_empty() {
+                summary = format!("{summary}\nDrive: {agencia_url}");
+            }
+        }
+
+        // --- Log CSV + webhook (apenas se distribuiu) ---
+        if let Some((spot_id, destinos_labels)) = send_info {
+            let log_entry = peach::send::SendLogEntry {
+                timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                pieza: titulo.to_string(),
+                codigo: uctx.codigo.clone(),
+                spot_id,
+                destinos: destinos_labels.join("; "),
+                id_envio: sts.id_envio.clone(),
+                agencia_url: agencia_url.clone(),
+            };
+            let output_dir = mxf_path.parent().unwrap_or(std::path::Path::new("."));
+            if let Err(e) = peach::send::append_send_log(output_dir, &log_entry) {
+                encoder_lib::log::emit(format!("[peach] Aviso: falha ao gravar log CSV: {e}"));
+            }
+
+            let client_name = uctx.cfg.avisador_id.clone();
+            peach::send::post_webhook(&uctx.cfg.webhook_url, &log_entry, &client_name).await;
         }
 
         Ok(summary)
     })
+}
+
+/// Sobe o MP4 agência pro Google Drive (standalone, sem passar pelo Peach).
+/// Usado quando o botão "Encodar" é clicado com o checkbox "Compartilhar MP4" marcado.
+/// Roda num runtime tokio próprio (thread sync).
+fn run_drive_only(
+    mp4_path: &Path,
+    webhook_url: &str,
+    folder_id: &str,
+    tx: &mpsc::Sender<EncoderMessage>,
+    ctx: &egui::Context,
+) -> anyhow::Result<String> {
+    if !mp4_path.exists() {
+        anyhow::bail!(
+            "MP4 agência não existe em {}. Verifique se o checkbox MP4 (agência) está marcado.",
+            mp4_path.display()
+        );
+    }
+    let _ = tx.send(EncoderMessage::Status(
+        "Compartilhando MP4 no Drive...".into(),
+    ));
+    ctx.request_repaint();
+
+    let rt = tokio::runtime::Runtime::new()?;
+    let result =
+        rt.block_on(async { peach::drive::upload_mp4_zipped(webhook_url, mp4_path, folder_id).await })?;
+    Ok(result.url)
+}
+
+/// Aguarda um JoinHandle de upload no Drive e retorna a URL (ou string vazia em erro).
+async fn await_drive(
+    handle: tokio::task::JoinHandle<anyhow::Result<peach::DriveUploadResult>>,
+) -> String {
+    match handle.await {
+        Ok(Ok(result)) => {
+            encoder_lib::log::emit(format!("[drive] URL: {}", result.url));
+            result.url
+        }
+        Ok(Err(e)) => {
+            encoder_lib::log::emit(format!("[drive] Upload falhou: {e}"));
+            String::new()
+        }
+        Err(e) => {
+            encoder_lib::log::emit(format!("[drive] Task panicou: {e}"));
+            String::new()
+        }
+    }
 }
 
 fn run_encode(
@@ -1214,6 +1379,22 @@ impl eframe::App for EncoderApp {
                 )
                 .on_disabled_hover_text(
                     "Cliente atual não tem [peach.destinos] configurado em defaults.toml.",
+                );
+
+                let drive_ready = self
+                    .peach_cfg
+                    .as_ref()
+                    .map(|c| !c.webhook_url.is_empty() && !c.drive_folder_id.is_empty())
+                    .unwrap_or(false);
+                ui.add_enabled(
+                    drive_ready,
+                    egui::Checkbox::new(&mut self.share_to_drive, "Compartilhar MP4 (Drive)"),
+                )
+                .on_hover_text(
+                    "Zipa o MP4 agência e envia pro Google Drive em paralelo com o QC.\nRetorna URL compartilhável (sobrescreve se já existe arquivo com mesmo nome).",
+                )
+                .on_disabled_hover_text(
+                    "Precisa configurar webhook_url e drive_folder_id no [peach] do cliente.",
                 );
             });
 

@@ -35,3 +35,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
 aws-credential-types = "1"
 regex = "1"
+
+# Google Drive webhook (zip + base64 upload)
+zip = { version = "2", default-features = false, features = ["deflate"] }
+base64 = "0.22"

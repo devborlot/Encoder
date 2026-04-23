@@ -608,17 +608,24 @@ async fn peach_send(
         destinos_sd: &sd_ids,
     };
 
-    println!("\nValidando spots × destinos...");
-    let val = client.validate_delivery(&req).await?;
-    println!("✅ validate: status={}", val.status);
-
-    println!("\nConfirmando envio...");
-    client.confirm_send(&req).await?;
-    println!("✅ confirm OK");
-
-    println!("\nExecutando envio...");
-    let summary = client.execute_send(&req).await?;
+    println!("\nDistribuindo...");
+    let summary = client.send_spots(&req, &peach_cfg).await?;
     println!("\n✅ {summary}");
+
+    // Log CSV
+    let all_destinos: Vec<&str> = hd_ids.iter().chain(sd_ids.iter()).map(|s| s.as_str()).collect();
+    let log_entry = peach::send::SendLogEntry {
+        timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        pieza: spots.iter().map(|s| s.to_string()).collect::<Vec<_>>().join("+"),
+        codigo: String::new(),
+        spot_id: spots[0],
+        destinos: all_destinos.join(";"),
+        id_envio: String::new(),
+        agencia_url: String::new(),
+    };
+    let output_dir = config_dir.join(&client_name);
+    let _ = peach::send::append_send_log(&output_dir, &log_entry);
+
     println!("\nVerifique no portal latam.peachvideo.com → Reportes.");
     Ok(())
 }
