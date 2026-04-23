@@ -1,0 +1,72 @@
+# Configuração do cliente
+# Copie esta pasta com o nome do cliente (ex: config/SIPOLATTI/)
+# e ajuste os valores abaixo.
+
+produto = "NOME DO PRODUTO"
+produtora = "NOME DA PRODUTORA"
+agencia = "NOME DA AGÊNCIA"
+anunciante = "NOME DO ANUNCIANTE"
+diretor = "NOME DO DIRETOR"
+
+# Diretório de saída padrão para este cliente.
+# Deixe vazio para salvar no mesmo diretório do vídeo.
+# Exemplo: output = "C:\\Videos\\Cliente\\output"
+output = ""
+
+# ============================================================
+# Bloco [peach] — Configuração de envio para a plataforma Peach
+# ============================================================
+# Opcional. Quando presente, habilita o envio automático para o Peach
+# (botão "Encodar e Enviar" / "Enviar" na GUI, ou comando `encoder peach upload`).
+#
+# Os IDs são descobertos via portal latam.peachvideo.com ou via lookup
+# da própria API. As credenciais (email/senha) ficam em
+# config/peach_credentials.toml (separado, não versionado).
+
+[peach]
+# Anunciante
+avisador_id = "BRA0743"             # ID do anunciante no Peach
+cnpj_avisador = "30689848000130"    # CNPJ só dígitos
+id_marca = 9758                     # ID numérico da marca
+id_producto = 25322                 # ID numérico do produto
+
+# Agência criativa
+agencia_id = "BR0741"               # ID da agência
+cnpj_agencia = "01936260000136"     # CNPJ só dígitos
+
+# Defaults técnicos (geralmente não precisam mudar)
+# formato = "2"             # 2 = MXF
+# pos_inicio = "07"
+# vineta = "no"
+# closed_caption = "no"
+# tecla_sap = "no"
+# lenguaje_senas = "no"
+# ad = "0"
+# surround = "0"
+# audio = "stereo"
+# tipo_crt = "A"
+# notificar_emails = ""    # emails para notificar (separados por vírgula)
+
+# ============================================================
+# Bloco [peach.destinos] — Distribuição automática para emissoras
+# ============================================================
+# IDs das emissoras (ID_EMPRESA do portal Peach). Quando configurado, o
+# botão "Encodar e Enviar" e o checkbox "Distribuir para emissoras" da GUI
+# vão automaticamente distribuir o VT para essas emissoras após o upload.
+#
+# Exemplos comuns:
+#   BR_GLOBO_112  → TV Santa Cruz (Itabuna/BA)
+#   BR_GLOBO_79   → TV Gazeta Vitória (ES)
+#   BR1230        → TV Vitória (Record/ES)
+
+# [peach.destinos]
+# hd = [
+#     { id = "BR_GLOBO_112", nome = "TV Santa Cruz (Itabuna/BA)" },
+#     { id = "BR_GLOBO_79",  nome = "TV Gazeta Vitória (ES)" },
+#     { id = "BR1230",       nome = "TV Vitória (Record/ES)" },
+# ]
+# sd = []
+#
+# Aceita também o formato simples (só IDs):
+#   hd = ["BR_GLOBO_112", "BR_GLOBO_79", "BR1230"]
+# Mas o formato detalhado mostra nomes amigáveis na GUI.
