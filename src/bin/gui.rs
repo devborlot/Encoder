@@ -631,7 +631,8 @@ impl EncoderApp {
                                 .join(format!("{}.mp4", titulo));
                             match run_drive_only(&mp4_path, &webhook_url, &folder_id, &tx_thread, &ctx) {
                                 Ok(url) => {
-                                    final_msg = format!("{final_msg}\n\nDrive: {url}");
+                                    let filename = format!("{}.mp4", titulo);
+                                    final_msg = format!("{final_msg}\n\n{filename}\n{url}");
                                 }
                                 Err(e) => {
                                     final_msg = format!("{final_msg}\n\n[drive] Falhou: {e}");
@@ -998,7 +999,8 @@ fn run_upload(
         if let Some(handle) = drive_future {
             agencia_url = await_drive(handle).await;
             if !agencia_url.is_empty() {
-                summary = format!("{summary}\nDrive: {agencia_url}");
+                let filename = format!("{}.mp4", titulo);
+                summary = format!("{summary}\n\n{filename}\n{agencia_url}");
             }
         }
 
